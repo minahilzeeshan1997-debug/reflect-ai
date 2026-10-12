@@ -1,0 +1,24 @@
+# Local database and SQLite temporary files
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor and OS files
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local logs
+*.log
