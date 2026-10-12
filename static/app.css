@@ -28,3 +28,20 @@
 .sidebar-signout{color:#315646!important;font-size:12px}
 @media(max-width:960px){.sidebar .private-note{display:none}.header .account-wrap{display:block}}
 @media(max-width:540px){.header .avatar{display:flex}.account-wrap .avatar span{display:none}.account-wrap .avatar{padding:6px}.account-menu{right:0;min-width:230px}}
+
+/* v0.3.1: persistent, accessible authentication feedback */
+.auth-error {background:#fff1ec;color:#873b2e;border:1px solid #ecc2b7;border-radius:12px;padding:12px 14px;margin:12px 0 18px;font-size:13px;line-height:1.5;}
+
+/* Reflect product iteration: analytics, editable entries and account screens */
+.stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:22px}
+.stat{padding:20px;display:flex;flex-direction:column;gap:8px}
+.stat span{color:#657c6e;font-size:12px;font-weight:700}
+.stat strong{font-size:38px;line-height:1;color:#2d4c40;letter-spacing:-1.5px}
+.stat small{color:#788b80;font-size:12px}
+.history-controls{display:flex;gap:12px;align-items:center;margin:20px 0}
+.history-controls input,.history-controls select{border:1px solid #d6e3d9;background:#f7faf6;border-radius:12px;padding:13px;min-width:0}
+.history-controls input{flex:1}
+.editor{margin:18px 0 24px;border:2px solid #7c9a92;background:#f8fcf8}
+.editor textarea{min-height:90px}
+@media(max-width:1100px){.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:650px){.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.history-controls{flex-wrap:wrap}.history-controls input{flex-basis:100%}}

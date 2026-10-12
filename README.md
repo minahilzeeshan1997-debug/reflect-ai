@@ -1,52 +1,57 @@
-# Reflect MVP v0.4 — optional evidence-linked AI insights
+# Reflect MVP v0.5 — Product experience and local account recovery
 
-**Upgrade from v0.3.2:** Copy `server.py`, `static/app.js`, and `README.md` into your current Reflect project. **Do not replace or delete `reflect.sqlite3`.** No database migration is required.
+Private leadership reflection prototype built with Python, SQLite and vanilla JavaScript. **For local use and fictional/demo reflection data only. Not production-ready.**
 
-## Start locally
+## Update an existing Reflect installation without losing reflections
 
-From the existing Reflect folder in VS Code PowerShell:
+1. Stop Reflect (`Ctrl+C` in the terminal).
+2. **Back up** your original `reflect.sqlite3` using Windows File Explorer or the `sqlite3.Connection.backup()` API. If your app was running, stop it first.
+3. Extract this ZIP to a **separate folder**. Copy all source files from its `Reflect_MVP` folder into your **existing** `Reflect_MVP` folder, replacing code files only. **Do not delete or replace your existing `reflect.sqlite3` database**. The ZIP contains no database.
+4. In your original folder, run `python server.py --check-db` and verify your existing account and reflection totals before starting.
+5. Run `python server.py`, open `http://127.0.0.1:8765` (do not switch between `localhost` and `127.0.0.1`). Force refresh using `Ctrl+Shift+R`.
+
+## Fix sign-in for an existing local password account
+
+If you get `401` on `/api/login`, it means your email or password was rejected: the absence of a session cookie is expected. Check the database using:
 
 ```powershell
+python server.py --check-db
+```
+
+If it shows your original account(s), stop the server and run:
+
+```powershell
+python reset_local_password.py
+```
+
+Enter your registered email and a new password **locally**; the recovery utility backs up your SQLite database before changing only that account's password hash and invalidating existing sessions. Your reflections, insights, actions, and account ID remain unchanged. **Do not commit, deploy, or expose this local recovery script as an online password reset feature.** Anyone with direct local database access could use it; that is why it is intended only for local development.
+
+If `accounts: 0` or the account email is not present, **do not reset or create a new account**: locate your original `reflect.sqlite3` first.
+
+## Features in this release
+
+- Dashboard: reflection totals, recent reflections, candidate insights, pending actions, unique reflection days and weekly rhythm (descriptive activity, not a leadership performance score).
+- Reflection history: search by text/date, filter for recent or entries with learning, edit and delete with confirmation. Editing an entry flags linked insights for re-review; deleting removes its evidence citation and downgrades linked insights.
+- Insights: original source reflection context and user confirmation/dismissal. Offline keyword baseline and optional Gemini analysis still available.
+- Account: update display name, change password with current password, sign out. Email-based recovery and hosted accounts **not implemented**.
+- Sign-in: generic client-side errors; local terminal shows whether email was missing or password did not match. Local password recovery tool provided.
+
+## Optional Gemini
+
+```powershell
+$env:GEMINI_API_KEY="YOUR_KEY"
+$env:REFLECT_AI_MODEL="MODEL_LISTED_FOR_YOUR_KEY"
 python server.py
 ```
 
-Open http://127.0.0.1:8765. Your existing password account and Google sign-in configuration remain in place.
+Gemini availability and free-tier rules vary by account. To verify model access independently, see your previously created `run_gemini.py --list-models` tool. Never put API keys in source code or GitHub. The default model in the server may be unavailable for your specific project; override it using `REFLECT_AI_MODEL`.
 
-## Choose an insight mode
-
-- **Generate offline insight**: existing deterministic keyword baseline; no internet connection, provider account, or API key required.
-- **Analyze with AI**: optional AI-powered thematic analysis that sends **up to 30 latest reflection entries** to OpenAI **only when you explicitly confirm**. Requires a personal API key; costs may apply. The key stays on the Python server and is never embedded in JavaScript or GitHub.
-
-### Enable AI on Windows (PowerShell)
-
-1. Create an API key in your OpenAI API account and keep it private.
-2. In the same VS Code PowerShell terminal used to launch Reflect, run:
-
-```powershell
-$env:OPENAI_API_KEY="YOUR_API_KEY"
-$env:REFLECT_AI_MODEL="gpt-4o-mini"
-python server.py
-```
-
-3. Refresh Reflect. On **Insights & patterns**, you will see **Analyze with AI** beside **Generate offline insight**.
-4. The browser asks for confirmation before transmitting your reflection text. The response is validated against your reflection IDs; you can inspect evidence and confirm or dismiss it.
-
-Note: the AI API subscription/billing is separate from a ChatGPT Plus subscription. Never commit keys, publish them in screenshots, or paste them in chat.
-
-## Safety and evidence guardrails
-
-Reflect only accepts JSON insights with `pattern`, `observation`, or `insufficient_evidence` labels. A pattern needs **at least two cited reflection IDs on different dates**; an observation requires exactly one; insufficient evidence requires none. All IDs must refer to a reflection in the current signed-in user's selected history. Invalid or unavailable AI responses fail safely with a clear error; they are **not** silently converted into fabricated AI results. The offline baseline remains available.
-
-These checks validate references and basic structure, **not semantic truth**. Users must verify whether the cited context actually supports the claim. Do not use this local prototype for HR decisions or employee evaluations. Avoid inserting confidential, identifying, or sensitive information. It is not yet hardened for internet deployment; do not expose the local server publicly.
-
-## Testing
+## Tests
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-The project continues using Python 3.10+, SQLite, and the standard library only for the main MVP; the OpenAI request uses Python's built-in HTTPS client. Google sign-in setup, if used, still requires the packages in `requirements-google.txt`.
+## Deployment status
 
-## Next AI PM milestones
-
-Evaluate insight precision, citation relevance, failure rate, false-pattern rate, latency, and cost against labeled synthetic reflection cases. Add explicit privacy settings, a data deletion/export flow, rate limiting, and secure hosting before deployment to others.
+This release is **not deployed** and should **not** be exposed publicly. Before real hosting, implement proper email recovery, hardened auth/cookies and HTTPS, abuse controls, backups, migrations, hosted database, privacy policy and data lifecycle controls. Google OAuth is optional and uses `requirements-google.txt` when configured.

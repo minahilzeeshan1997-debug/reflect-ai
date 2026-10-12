@@ -57,8 +57,43 @@ class HttpFlowTests(unittest.TestCase):
         self.post('/api/logout', {}, logged['csrf'])
         self.assertIsNone(self.get('/api/me')['user'])
 
+    def test_login_with_existing_password_account(self):
+        # v0.1/v0.2 users have the same PBKDF2 format as v0.3.1.
+        email='legacy@reflect.test'
+        with server.conn() as db:
+            db.execute('INSERT INTO users(name,email,passhash,created_at) VALUES(?,?,?,?)',
+                       ('Legacy User',email,server.hash_password('old-password-123'),server.now()))
+        result=self.post('/api/login',{'email':email,'password':'old-password-123'})
+        self.assertEqual(result['user']['name'],'Legacy User')
+        self.assertIsNotNone(self.get('/api/me')['user'])
+
     def test_logout_without_session(self):
         self.assertTrue(self.post('/api/logout', {})['ok'])
+
+    def test_reflection_edit_delete_and_profile(self):
+        import secrets
+        suffix=secrets.token_hex(5)
+        email=f'edit-{suffix}@reflect.test'
+        signed=self.post('/api/signup',{'name':'Editor Person','email':email,'password':'initial-password-123'})
+        csrf=signed['csrf']
+        created=self.post('/api/reflections',{'happened_on':'2026-09-17','situation':'A scheduled team meeting had unclear ownership','response':'I clarified assignments','learning':'Confirm owners'},csrf)
+        rid=created['id']
+        updated=self.post('/api/reflections/update',{'id':rid,'happened_on':'2026-09-18','situation':'A different team meeting needed an explicit agenda','response':'I wrote the agenda','learning':'Prepare earlier'},csrf)
+        self.assertTrue(updated['ok'])
+        items=self.get('/api/reflections')['reflections']
+        self.assertEqual(next(r for r in items if r['id']==rid)['happened_on'],'2026-09-18')
+        profile=self.post('/api/account/profile',{'name':'Updated Editor'},csrf)
+        self.assertEqual(profile['user']['name'],'Updated Editor')
+        with self.assertRaises(urllib.error.HTTPError) as wrong:
+            self.post('/api/account/password',{'current_password':'wrong','new_password':'new-password-123'},csrf)
+        self.assertEqual(wrong.exception.code,403)
+        self.post('/api/account/password',{'current_password':'initial-password-123','new_password':'new-password-123'},csrf)
+        self.post('/api/logout',{},csrf)
+        new_login=self.post('/api/login',{'email':email,'password':'new-password-123'})
+        csrf=new_login['csrf']
+        deleted=self.post('/api/reflections/delete',{'id':rid},csrf)
+        self.assertTrue(deleted['ok'])
+        self.assertFalse(any(r['id']==rid for r in self.get('/api/reflections')['reflections']))
 
     def test_oauth_config_public(self):
         self.assertIn('google', self.get('/api/auth/providers'))

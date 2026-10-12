@@ -17,12 +17,15 @@ GOOGLE_CLIENT_SECRET = os.environ.get('REFLECT_GOOGLE_CLIENT_SECRET', '').strip(
 GOOGLE_REDIRECT_URI = os.environ.get('REFLECT_GOOGLE_REDIRECT_URI', f'http://127.0.0.1:{PORT}/auth/google/callback').strip()
 GOOGLE_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 # Optional LLM provider. Without an API key the offline baseline remains available.
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '').strip()
-OPENAI_MODEL = os.environ.get('REFLECT_AI_MODEL', 'gpt-4o-mini').strip()
-OPENAI_ENDPOINT = 'https://api.openai.com/v1/chat/completions'
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
+GEMINI_MODEL = os.environ.get('REFLECT_AI_MODEL', 'gemini-3.5-flash-lite').strip()
+if not re.fullmatch(r'[a-zA-Z0-9._-]+', GEMINI_MODEL):
+    raise ValueError('Invalid Gemini model name')
+GEMINI_ENDPOINT = f'https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent'
 SESSION_HOURS = 12
 MAX_BODY = 100_000
 lock = threading.RLock()
+login_attempts = {}
 
 def conn():
     db = sqlite3.connect(DB_PATH, timeout=10)
@@ -130,7 +133,7 @@ def validate_ai_insight(candidate, reflections):
 
 def ai_detector(reflections):
     """Call the optional provider without exposing the key to browser clients."""
-    if not OPENAI_API_KEY: raise ValueError('AI not configured')
+    if not GEMINI_API_KEY: raise ValueError('AI not configured')
     if not reflections:return detector(reflections)
     # Cap the amount of private text transmitted to the provider.
     records=[{k:(r[k][:1600] if k in ('situation','response','learning') else r[k])
@@ -145,15 +148,19 @@ def ai_detector(reflections):
         'An observation cites exactly one entry. If evidence is vague, conflicting or insufficient, '
         'return insufficient_evidence with citations []. All cited IDs must occur in the input. '
         'Describe uncertainty clearly, and do not invent events or quotes. Keep your writing concise.')
-    payload={'model':OPENAI_MODEL,'temperature':0.2,'response_format':{'type':'json_object'},
-             'messages':[{'role':'system','content':system_msg},
-                         {'role':'user','content':json.dumps({'reflections':records},ensure_ascii=False)}]}
-    req=urllib.request.Request(OPENAI_ENDPOINT, data=json.dumps(payload).encode('utf-8'),
-        headers={'Authorization':'Bearer '+OPENAI_API_KEY,'Content-Type':'application/json'},method='POST')
-    with urllib.request.urlopen(req,timeout=18) as res:
+    payload={
+        'systemInstruction':{'parts':[{'text':system_msg}]},
+        'contents':[{'role':'user','parts':[{'text':json.dumps({'reflections':records},ensure_ascii=False)}]}],
+        'generationConfig':{'temperature':0.2,'responseMimeType':'application/json'}
+    }
+    req=urllib.request.Request(GEMINI_ENDPOINT,data=json.dumps(payload).encode('utf-8'),
+        headers={'x-goog-api-key':GEMINI_API_KEY,'Content-Type':'application/json'},method='POST')
+    with urllib.request.urlopen(req,timeout=30) as res:
         if res.status!=200:raise ValueError('Provider request failed')
         body=res.read(80_000)
-    raw=json.loads(body)['choices'][0]['message']['content']
+    result=json.loads(body)
+    parts=result['candidates'][0]['content']['parts']
+    raw=''.join(part.get('text','') for part in parts)
     return validate_ai_insight(json.loads(raw),reflections)
 
 class Handler(BaseHTTPRequestHandler):
@@ -269,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/auth/google/callback':return self.google_callback(url.query)
         if path=='/api/auth/providers':return self.send_data(200,{'google':GOOGLE_ENABLED})
         if path=='/api/me':
-            user=self.auth();return self.send_data(200,{'user':{k:user[k] for k in ('id','name','email')} if user else None,'csrf':user['csrf'] if user else None,'providers':{'google':GOOGLE_ENABLED,'ai':bool(OPENAI_API_KEY)}})
+            user=self.auth();return self.send_data(200,{'user':{k:user[k] for k in ('id','name','email')} if user else None,'csrf':user['csrf'] if user else None,'providers':{'google':GOOGLE_ENABLED,'ai':bool(GEMINI_API_KEY)}})
         if path.startswith('/api/'):
             user=self.auth()
             if not user:return self.err(401,'Please sign in')
@@ -305,9 +312,20 @@ class Handler(BaseHTTPRequestHandler):
             cookie,csrf=self.issue_session(uid)
             return self.send_data(201,{'user':{'id':uid,'name':name,'email':email},'csrf':csrf},cookie)
         if path=='/api/login':
+            # Local-dev throttle for repeated incorrect passwords, per IP address.
+            ip=self.client_address[0];ts=time.time()
+            with lock:
+                recent=[t for t in login_attempts.get(ip,[]) if ts-t<60]
+                login_attempts[ip]=recent
+                if len(recent)>=10:return self.err(429,'Too many attempts. Wait one minute before trying again.')
             email=str(data.get('email','')).strip().lower();password=str(data.get('password',''))
             with conn() as db:row=db.execute('SELECT * FROM users WHERE email=?',(email,)).fetchone()
-            if not row or not verify_password(password,row['passhash']):return self.err(401,'Email or password not recognized in this local database. If this worked before updating, check that you are using your original reflect.sqlite3 file.')
+            if not row:
+                print('Login failed: account not found in current database', file=sys.stderr)
+                return self.err(401, 'Email or password is incorrect')
+            if not verify_password(password, row['passhash']):
+                print('Login failed: password verification failed', file=sys.stderr)
+                return self.err(401, 'Email or password is incorrect')
             cookie,csrf=self.issue_session(row['id'])
             return self.send_data(200,{'user':{'id':row['id'],'name':row['name'],'email':row['email']},'csrf':csrf},cookie)
         if path=='/api/logout' and not self.auth():
@@ -320,6 +338,51 @@ class Handler(BaseHTTPRequestHandler):
             if c.get('reflect_session'):
                 with conn() as db:db.execute('DELETE FROM sessions WHERE token_hash=?',(hashlib.sha256(c['reflect_session'].value.encode()).hexdigest(),))
             return self.send_data(200,{'ok':True},'reflect_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0')
+        if path=='/api/account/profile':
+            name=str(data.get('name','')).strip()
+            if not 2<=len(name)<=100:return self.err(400,'Name must be 2–100 characters')
+            with conn() as db:db.execute('UPDATE users SET name=? WHERE id=?',(name,user['id']))
+            return self.send_data(200,{'user':{'id':user['id'],'name':name,'email':user['email']}})
+        if path=='/api/account/password':
+            old=str(data.get('current_password',''))
+            new=str(data.get('new_password',''))
+            if not 8<=len(new)<=128:return self.err(400,'New password must be 8–128 characters')
+            with conn() as db:
+                row=db.execute('SELECT passhash FROM users WHERE id=?',(user['id'],)).fetchone()
+                if not row or not verify_password(old,row['passhash']):return self.err(403,'Current password was not correct')
+                db.execute('UPDATE users SET passhash=? WHERE id=?',(hash_password(new),user['id']))
+            return self.send_data(200,{'ok':True})
+        if path in ('/api/reflections/update','/api/reflections/delete'):
+            try:rid=int(data.get('id'))
+            except (TypeError,ValueError):return self.err(400,'Invalid reflection ID')
+            if path.endswith('delete'):
+                with conn() as db:
+                    current=db.execute('SELECT id FROM reflections WHERE id=? AND user_id=?',(rid,user['id'])).fetchone()
+                    if not current:return self.err(404,'Reflection not found')
+                    # Preserve insight history but remove deleted evidence reference.
+                    for ins in db.execute('SELECT id,citations FROM insights WHERE user_id=?',(user['id'],)):
+                        ids=json.loads(ins['citations'])
+                        if rid in ids:
+                            ids=[x for x in ids if x!=rid]
+                            db.execute('UPDATE insights SET citations=?,state=?,description=description||? WHERE id=? AND user_id=?',
+                                (json.dumps(ids),'insufficient_evidence',' [Source entry deleted; regenerate this insight before using it.]',ins['id'],user['id']))
+                    db.execute('DELETE FROM reflections WHERE id=? AND user_id=?',(rid,user['id']))
+                return self.send_data(200,{'ok':True})
+            vals=[str(data.get(k,'')).strip() for k in ('situation','response','learning')]
+            date=str(data.get('happened_on',''))
+            if not valid_date(date) or len(vals[0])<10 or any(len(v)>4000 for v in vals):
+                return self.err(400,'Provide a valid date and situation (at least 10 characters; 4000 maximum per field)')
+            if date>(datetime.now().date()+timedelta(days=1)).isoformat():return self.err(400,'Date cannot be in the distant future')
+            with conn() as db:
+                cur=db.execute('UPDATE reflections SET situation=?,response=?,learning=?,happened_on=? WHERE id=? AND user_id=?',(*vals,date,rid,user['id']))
+                if not cur.rowcount:return self.err(404,'Reflection not found')
+                # A change invalidates previously generated interpretations based on this evidence.
+                for ins in db.execute('SELECT id,citations FROM insights WHERE user_id=?',(user['id'],)):
+                    if rid in json.loads(ins['citations']):
+                        db.execute('UPDATE insights SET feedback=?,description=description||? WHERE id=? AND user_id=?',
+                                   ('pending',' [A cited reflection was edited; review this insight again.]',ins['id'],user['id']))
+            return self.send_data(200,{'ok':True})
+
         if path=='/api/reflections':
             vals=[str(data.get(k,'')).strip() for k in ('situation','response','learning')]
             date=str(data.get('happened_on',''))
@@ -334,8 +397,8 @@ class Handler(BaseHTTPRequestHandler):
             # Opt-in per request; no data leaves the machine for baseline generation.
             method=str(data.get('method','baseline'))
             if method not in ('baseline','ai'):return self.err(400,'Unsupported insight method')
-            if method=='ai' and not OPENAI_API_KEY:
-                return self.err(400,'AI is not configured. Set OPENAI_API_KEY on the server, or use Offline baseline.')
+            if method=='ai' and not GEMINI_API_KEY:
+                return self.err(400,'AI is not configured. Set GEMINI_API_KEY on the server, or use Offline baseline.')
             try:
                 result=ai_detector(reflections) if method=='ai' else detector(reflections)
             except (ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, OSError) as e:
